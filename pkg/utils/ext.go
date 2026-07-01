@@ -18,7 +18,11 @@ func SupportedExtensions() []string {
 
 // IsSupportedExt returns true if the file extension is in the supported list.
 func IsSupportedExt(path string, extraExts []string) bool {
-	ext := strings.ToLower(path[strings.LastIndex(path, "."):])
+	dot := strings.LastIndex(path, ".")
+	if dot == -1 {
+		return false // no extension → not supported
+	}
+	ext := strings.ToLower(path[dot:])
 	for _, e := range SupportedExtensions() {
 		if e == ext {
 			return true
