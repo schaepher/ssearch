@@ -9,6 +9,7 @@ import (
 	"go.etcd.io/bbolt"
 
 	"ssearch/internal/storage"
+	"ssearch/pkg/utils"
 )
 
 // BatchSize controls how many files are indexed per BoltDB transaction.
@@ -20,6 +21,7 @@ type IndexOptions struct {
 	MaxSize       int64
 	IncludeHidden bool
 	Stopwords     map[string]bool
+	Extensions    []string
 	DictCachePath string
 }
 
@@ -66,6 +68,11 @@ func BuildIndex(ctx context.Context, bdb *bbolt.DB, opts IndexOptions) error {
 	}
 
 	for entry := range fileCh {
+		// Skip files with unsupported extensions.
+		if !utils.IsSupportedExt(entry.Path, opts.Extensions) {
+			continue
+		}
+
 		// Check for oversized files.
 		if entry.Size > opts.MaxSize {
 			pe := &storage.PendingEntry{

@@ -49,6 +49,7 @@ word segmentation, and stored in the inverted index.`,
 				MaxSize:       maxBytes,
 				IncludeHidden: app.IncludeHidden,
 				Stopwords:     sw,
+				Extensions:    app.Config.ResolveExtensions(),
 				DictCachePath: app.DictCachePath,
 			}
 			return indexer.BuildIndex(c.Context(), app.DB.Bolt(), opts)

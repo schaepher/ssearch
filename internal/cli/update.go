@@ -51,6 +51,7 @@ Use --force-pending to retry files that previously failed to index.`,
 				Force:         force,
 				ForcePending:  forcePending,
 				Stopwords:     app.Config.ResolveStopwords(),
+				Extensions:    app.Config.ResolveExtensions(),
 				DictCachePath: app.DictCachePath,
 			}
 			return indexer.UpdateIndex(c.Context(), app.DB.Bolt(), opts)

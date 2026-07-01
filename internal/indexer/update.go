@@ -9,6 +9,7 @@ import (
 	"go.etcd.io/bbolt"
 
 	"ssearch/internal/storage"
+	"ssearch/pkg/utils"
 )
 
 // UpdateOptions configures an incremental index update.
@@ -21,6 +22,7 @@ type UpdateOptions struct {
 	Force         bool   // unconditionally rebuild all files
 	ForcePending  bool   // retry all pending files
 	Stopwords     map[string]bool
+	Extensions    []string
 	DictCachePath string
 }
 
@@ -69,6 +71,11 @@ func UpdateIndex(ctx context.Context, bdb *bbolt.DB, opts UpdateOptions) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		// Skip files with unsupported extensions.
+		if !utils.IsSupportedExt(entry.Path, opts.Extensions) {
+			continue
 		}
 
 		var action string
