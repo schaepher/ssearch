@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/go-ego/gse v0.80.3
+	github.com/klauspost/compress v1.19.0
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.5.0

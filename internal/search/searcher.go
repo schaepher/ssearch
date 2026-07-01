@@ -109,8 +109,12 @@ func (s *Searcher) Search(terms []string, limit int) ([]Result, []string, error)
 			if fmBytes == nil {
 				continue
 			}
+			decoded, err := storage.Decompress(fmBytes)
+			if err != nil {
+				continue
+			}
 			var fm storage.FileMeta
-			if err := json.Unmarshal(fmBytes, &fm); err != nil {
+			if err := json.Unmarshal(decoded, &fm); err != nil {
 				continue
 			}
 

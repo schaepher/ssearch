@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -175,20 +176,24 @@ func GetFileMeta(tx *bbolt.Tx, id uint64) (*FileMeta, error) {
 	if v == nil {
 		return nil, fmt.Errorf("%w: filemeta for id %d", ErrNotFound, id)
 	}
+	decoded, err := Decompress(v)
+	if err != nil {
+		return nil, fmt.Errorf("decompress filemeta id %d: %w", id, err)
+	}
 	var fm FileMeta
-	if err := json.Unmarshal(v, &fm); err != nil {
+	if err := json.Unmarshal(decoded, &fm); err != nil {
 		return nil, fmt.Errorf("unmarshal filemeta id %d: %w", id, err)
 	}
 	return &fm, nil
 }
 
-// PutFileMeta stores file metadata.
+// PutFileMeta stores file metadata (zstd compressed).
 func PutFileMeta(tx *bbolt.Tx, id uint64, fm *FileMeta) error {
 	data, err := json.Marshal(fm)
 	if err != nil {
 		return fmt.Errorf("marshal filemeta id %d: %w", id, err)
 	}
-	return tx.Bucket(BucketFileMeta).Put(Uint64ToBytes(id), data)
+	return tx.Bucket(BucketFileMeta).Put(Uint64ToBytes(id), Compress(data))
 }
 
 // TouchModTime updates only the ModTime field of an existing FileMeta entry.
@@ -203,47 +208,85 @@ func TouchModTime(tx *bbolt.Tx, id uint64, modTime time.Time) error {
 
 // ---- Inverted Index ----
 
-// AddTermIndex inserts fileID into the term's sub-bucket.
-// The sub-bucket is created on demand if it does not exist.
+// AddTermIndex inserts fileID into the term's compressed inverted list.
+// Uses read-modify-write: decompress → insert sorted → recompress.
 func AddTermIndex(tx *bbolt.Tx, term string, fileID uint64) error {
 	inv := tx.Bucket(BucketInverted)
-	tb, err := inv.CreateBucketIfNotExists([]byte(term))
-	if err != nil {
-		return fmt.Errorf("create term bucket %q: %w", term, err)
+	termBytes := []byte(term)
+	existing := inv.Get(termBytes)
+
+	if existing == nil {
+		// First file for this term.
+		encoded := EncodeIDs([]uint64{fileID})
+		return inv.Put(termBytes, Compress(encoded))
 	}
-	return tb.Put(Uint64ToBytes(fileID), nil)
+
+	// Decompress → decode → insert → encode → compress.
+	decoded, err := Decompress(existing)
+	if err != nil {
+		return fmt.Errorf("decompress term %q: %w", term, err)
+	}
+	ids, err := DecodeIDs(decoded)
+	if err != nil {
+		return fmt.Errorf("decode term %q: %w", term, err)
+	}
+
+	// Binary search and insert to maintain sorted order.
+	pos, found := slices.BinarySearch(ids, fileID)
+	if found {
+		return nil // already present
+	}
+	ids = slices.Insert(ids, pos, fileID)
+
+	encoded := EncodeIDs(ids)
+	return inv.Put(termBytes, Compress(encoded))
 }
 
-// RemoveFileFromInverted deletes fileID from every term sub-bucket.
+// RemoveFileFromInverted removes fileID from every term's compressed list.
 func RemoveFileFromInverted(tx *bbolt.Tx, fileID uint64) error {
 	inv := tx.Bucket(BucketInverted)
-	key := Uint64ToBytes(fileID)
 	return inv.ForEach(func(term, v []byte) error {
-		if v != nil {
-			return nil // skip direct values (should not exist)
+		if v == nil {
+			return nil // skip sub-buckets from old v5 schema (defensive)
 		}
-		tb := inv.Bucket(term)
-		if tb != nil {
-			_ = tb.Delete(key)
+
+		decoded, err := Decompress(v)
+		if err != nil {
+			return fmt.Errorf("decompress term %q: %w", string(term), err)
 		}
-		return nil
+		ids, err := DecodeIDs(decoded)
+		if err != nil {
+			return fmt.Errorf("decode term %q: %w", string(term), err)
+		}
+
+		// Binary search and remove.
+		pos, found := slices.BinarySearch(ids, fileID)
+		if !found {
+			return nil // not in this term
+		}
+		ids = slices.Delete(ids, pos, pos+1)
+
+		if len(ids) == 0 {
+			return inv.Delete(term) // remove empty term
+		}
+		encoded := EncodeIDs(ids)
+		return inv.Put(term, Compress(encoded))
 	})
 }
 
 // FileIDsForTerm returns all file IDs that contain the given term.
 func FileIDsForTerm(tx *bbolt.Tx, term string) ([]uint64, error) {
 	inv := tx.Bucket(BucketInverted)
-	tb := inv.Bucket([]byte(term))
-	if tb == nil {
+	v := inv.Get([]byte(term))
+	if v == nil {
 		return nil, nil
 	}
 
-	var ids []uint64
-	c := tb.Cursor()
-	for k, _ := c.First(); k != nil; k, _ = c.Next() {
-		ids = append(ids, BytesToUint64(k))
+	decoded, err := Decompress(v)
+	if err != nil {
+		return nil, fmt.Errorf("decompress term %q: %w", term, err)
 	}
-	return ids, nil
+	return DecodeIDs(decoded)
 }
 
 // ---- Pending Bucket ----
@@ -255,7 +298,11 @@ func ListPending(tx *bbolt.Tx) (map[string]*PendingEntry, error) {
 	c := b.Cursor()
 	for k, v := c.First(); k != nil; k, v = c.Next() {
 		var pe PendingEntry
-		if err := json.Unmarshal(v, &pe); err != nil {
+		decoded, err := Decompress(v)
+		if err != nil {
+			return nil, fmt.Errorf("decompress pending %q: %w", string(k), err)
+		}
+		if err := json.Unmarshal(decoded, &pe); err != nil {
 			return nil, fmt.Errorf("unmarshal pending %q: %w", string(k), err)
 		}
 		entries[string(k)] = &pe
@@ -269,7 +316,7 @@ func PutPending(tx *bbolt.Tx, path string, pe *PendingEntry) error {
 	if err != nil {
 		return err
 	}
-	return tx.Bucket(BucketPending).Put([]byte(path), data)
+	return tx.Bucket(BucketPending).Put([]byte(path), Compress(data))
 }
 
 // DeletePending removes a pending entry.
@@ -291,7 +338,11 @@ func ListDead(tx *bbolt.Tx) (map[string]*DeadEntry, error) {
 	c := b.Cursor()
 	for k, v := c.First(); k != nil; k, v = c.Next() {
 		var de DeadEntry
-		if err := json.Unmarshal(v, &de); err != nil {
+		decoded, err := Decompress(v)
+		if err != nil {
+			return nil, fmt.Errorf("decompress dead %q: %w", string(k), err)
+		}
+		if err := json.Unmarshal(decoded, &de); err != nil {
 			return nil, fmt.Errorf("unmarshal dead %q: %w", string(k), err)
 		}
 		entries[string(k)] = &de
@@ -305,7 +356,7 @@ func PutDead(tx *bbolt.Tx, path string, de *DeadEntry) error {
 	if err != nil {
 		return err
 	}
-	return tx.Bucket(BucketDead).Put([]byte(path), data)
+	return tx.Bucket(BucketDead).Put([]byte(path), Compress(data))
 }
 
 // DeleteDead removes a dead entry.
@@ -486,8 +537,12 @@ func SearchTerms(tx *bbolt.Tx, terms []string, limit int) ([]SearchResult, error
 		if fmBytes == nil {
 			continue
 		}
+		decoded, err := Decompress(fmBytes)
+		if err != nil {
+			continue
+		}
 		var fm FileMeta
-		if err := json.Unmarshal(fmBytes, &fm); err != nil {
+		if err := json.Unmarshal(decoded, &fm); err != nil {
 			continue
 		}
 		results = append(results, SearchResult{

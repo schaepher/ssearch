@@ -6,7 +6,7 @@ import (
 )
 
 // CurrentVersion is the schema version written into the meta bucket.
-const CurrentVersion = "v5.1"
+const CurrentVersion = "v6.0"
 
 // ByteOrder is used for all uint64 ↔ []byte conversions.
 // BigEndian preserves numeric sort order in BoltDB's B+tree.
