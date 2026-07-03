@@ -36,10 +36,10 @@ Output format: ModTime<TAB>Path<TAB>Size`,
 				return fmt.Errorf("init tokenizer: %w", err)
 			}
 
-			// Tokenize each keyword.
+			// Tokenize each keyword in precise mode to preserve compounds like "自旋".
 			var terms []string
 			for _, kw := range args {
-				tokens := tok.Tokenize(kw)
+				tokens := tok.TokenizePrecise(kw)
 				terms = append(terms, tokens...)
 			}
 

@@ -20,17 +20,17 @@ func TestTokenizer_Tokenize_Chinese(t *testing.T) {
 		t.Fatal("got 0 tokens for Chinese text")
 	}
 
-	// gse search mode tokenizes each character for maximal recall.
-	// Verify we get individual characters and that common ones are present.
+	// Search mode produces compound words with the loaded dictionary.
 	found := make(map[string]bool)
 	for _, tok := range tokens {
 		found[tok] = true
 	}
 
-	// Characters that should appear (gse search mode produces single chars).
-	for _, ch := range []string{"今", "天", "北", "京", "气", "非", "常", "好"} {
-		if !found[ch] {
-			t.Logf("token %q not found (search mode may group differently): tokens=%v", ch, tokens)
+	// Dictionary compounds that should appear ("好" is a stopword).
+	expected := []string{"今天", "北京", "天气", "非常"}
+	for _, exp := range expected {
+		if !found[exp] {
+			t.Errorf("expected token %q not found in %v", exp, tokens)
 		}
 	}
 }
@@ -60,6 +60,73 @@ func TestTokenizer_Tokenize_Empty(t *testing.T) {
 	tokens := tok.Tokenize("")
 	if tokens != nil {
 		t.Errorf("expected nil for empty text, got %v", tokens)
+	}
+}
+
+func TestTokenizer_PreciseVsSearch_Diagnostic(t *testing.T) {
+	tok, err := NewTokenizer("", nil)
+	if err != nil {
+		t.Fatalf("NewTokenizer: %v", err)
+	}
+
+	texts := []string{"自旋", "自旋锁", "搜索引擎", "今天北京的天气", "锁", "乐观锁", "读写锁"}
+
+	t.Log("=== gse segmentation comparison ===")
+	for _, text := range texts {
+		precise := tok.TokenizePrecise(text)
+		search := tok.Tokenize(text)
+		// Raw gse output without stopword/dedup.
+		rawPrecise := tok.seg.Slice(text, false)
+		rawSearch := tok.seg.Slice(text, true)
+		t.Logf("%q:", text)
+		t.Logf("  Slice(false) = %v", rawPrecise)
+		t.Logf("  Slice(true)  = %v", rawSearch)
+		t.Logf("  TokenizePrecise = %v", precise)
+		t.Logf("  Tokenize        = %v", search)
+
+		// Check: does TokenizePrecise preserve the query as a single token?
+		if len(precise) == 1 && precise[0] == text {
+			t.Logf("  ✅ %q preserved as whole word", text)
+		} else {
+			t.Logf("  ❌ %q split into %v", text, precise)
+		}
+	}
+}
+
+func TestTokenizer_TokenizePrecise_PreservesCompounds(t *testing.T) {
+	tok, err := NewTokenizer("", nil)
+	if err != nil {
+		t.Fatalf("NewTokenizer: %v", err)
+	}
+
+	// Precise mode: "自旋" is a dictionary compound — must stay whole.
+	tokens := tok.TokenizePrecise("自旋")
+	if len(tokens) != 1 || tokens[0] != "自旋" {
+		t.Errorf("expected ['自旋'], got %v", tokens)
+	}
+
+	// Search mode (indexing): "自旋" is split for max recall.
+	searchTokens := tok.Tokenize("自旋")
+	if len(searchTokens) != 2 {
+		t.Logf("search mode tokens for '自旋': %v", searchTokens)
+	}
+
+	// Precise: "自旋锁" → ["自旋", "锁"] (compound preserved).
+	tokens2 := tok.TokenizePrecise("自旋锁")
+	found := make(map[string]bool)
+	for _, tok := range tokens2 {
+		found[tok] = true
+	}
+	if !found["自旋"] {
+		t.Errorf("expected '自旋' in precise tokens, got %v", tokens2)
+	}
+
+	// Single char "锁" — precise preserves, search drops.
+	if tok.TokenizePrecise("锁")[0] != "锁" {
+		t.Errorf("precise should preserve single char '锁'")
+	}
+	if len(tok.Tokenize("锁")) != 0 {
+		t.Logf("search mode tokens for '锁': %v", tok.Tokenize("锁"))
 	}
 }
 

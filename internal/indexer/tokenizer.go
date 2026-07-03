@@ -9,7 +9,7 @@ import (
 	"github.com/go-ego/gse"
 )
 
-const dictVersion = "v5.1"
+const dictVersion = "v6.0"
 
 // Tokenizer wraps the gse segmenter with stopword filtering.
 type Tokenizer struct {
@@ -26,7 +26,7 @@ func NewTokenizer(dictCachePath string, stopwords map[string]bool) (*Tokenizer, 
 	// Try loading from gob cache first.
 	if loaded := loadDictCache(seg, dictCachePath); !loaded {
 		// Load embedded dictionary.
-		if err := seg.LoadDictEmbed(""); err != nil {
+		if err := seg.LoadDictEmbed("zh"); err != nil {
 			// Try loading default dict from gse's embedded data.
 			return nil, fmt.Errorf("load gse dict: %w", err)
 		}
@@ -105,6 +105,36 @@ func (t *Tokenizer) Tokenize(text string) []string {
 			continue
 		}
 		// Deduplicate.
+		if _, ok := seen[w]; ok {
+			continue
+		}
+		seen[w] = struct{}{}
+		result = append(result, w)
+	}
+	return result
+}
+
+// TokenizePrecise segments text using gse precise mode (non-search),
+// preserving dictionary compounds that match the full input.
+// Use this for search query tokenization to avoid splitting short
+// compound words like "自旋" into individual characters.
+func (t *Tokenizer) TokenizePrecise(text string) []string {
+	if t.seg == nil || text == "" {
+		return nil
+	}
+
+	words := t.seg.Slice(text, false)
+
+	seen := make(map[string]struct{}, len(words))
+	result := make([]string, 0, len(words))
+	for _, w := range words {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		if t.stopwords != nil && t.stopwords[w] {
+			continue
+		}
 		if _, ok := seen[w]; ok {
 			continue
 		}
